@@ -1,0 +1,8 @@
+Target,Type,Best Model,Best Score
+升力系数,regression,XGBoost,0.9987381327202108
+阻力系数,regression,XGBoost,0.999657327995666
+俯仰力矩系数,regression,XGBoost,0.9999196143137181
+压心,regression,XGBoost,0.9989928131098763
+内流升力系数,regression,XGBoost,0.9968470316344981
+内流阻力系数,regression,XGBoost,0.9848938526735322
+内流俯仰力矩系数,regression,XGBoost,0.9939105360572168

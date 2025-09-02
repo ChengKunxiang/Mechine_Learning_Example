@@ -8,23 +8,23 @@ from datetime import datetime
 warnings.filterwarnings('ignore')
 
 
-class EnhancedModelPredictor:
+class MultiTargetModelPredictor:
     def __init__(self, model_dir):
         """
-        初始化增强型预测器
+        初始化多目标预测器
 
         参数:
         model_dir (str): 包含保存的模型和预处理对象的目录路径
         """
         self.model_dir = model_dir
         self.preprocessing = None
-        self.best_model = None
+        self.best_models = {}  # 存储每个目标变量的最佳模型
         self.feature_names = None
-        self.problem_type = None
-        self.target_name = None
+        self.target_names = None
+        self.problem_types = {}  # 存储每个目标变量的问题类型
 
         # 创建输出目录（在程序相同目录下）
-        self.output_dir = os.path.join(os.getcwd(), "prediction_output")
+        self.output_dir = os.path.join(os.getcwd(), "multi_target_prediction_output")
         os.makedirs(self.output_dir, exist_ok=True)
         print(f"输出目录已创建: {self.output_dir}")
 
@@ -32,7 +32,7 @@ class EnhancedModelPredictor:
         self.load_models()
 
     def load_models(self):
-        """加载预处理对象和最佳模型"""
+        """加载预处理对象和所有目标变量的最佳模型"""
         # 加载预处理对象
         preprocessing_path = os.path.join(self.model_dir, "preprocessing.pkl")
         if not os.path.exists(preprocessing_path):
@@ -41,22 +41,22 @@ class EnhancedModelPredictor:
         self.preprocessing = joblib.load(preprocessing_path)
         print("预处理对象加载成功")
 
-        # 加载最佳模型
-        best_model_path = os.path.join(self.model_dir, "best_model.pkl")
-        if not os.path.exists(best_model_path):
-            raise FileNotFoundError(f"最佳模型文件未找到: {best_model_path}")
-
-        self.best_model = joblib.load(best_model_path)
-        print("最佳模型加载成功")
-
-        # 获取特征名称和问题类型
+        # 获取特征名称和目标变量名称
         self.feature_names = self.preprocessing['feature_names']
-        self.problem_type = self.preprocessing['problem_type']
-        self.target_name = self.preprocessing.get('target_name', 'target')
+        self.target_names = self.preprocessing['target_names']
+        self.problem_types = self.preprocessing['problem_types']
 
-        print(f"问题类型: {self.problem_type}")
-        print(f"目标变量: {self.target_name}")
-        print(f"特征数量: {len(self.feature_names)}")
+        print(f"目标变量: {self.target_names}")
+        print(f"问题类型: {self.problem_types}")
+
+        # 加载每个目标变量的最佳模型
+        for target in self.target_names:
+            best_model_path = os.path.join(self.model_dir, f"best_model_{target}.pkl")
+            if not os.path.exists(best_model_path):
+                raise FileNotFoundError(f"最佳模型文件未找到: {best_model_path}")
+
+            self.best_models[target] = joblib.load(best_model_path)
+            print(f"目标变量 '{target}' 的最佳模型加载成功")
 
     def preprocess_new_data(self, new_data):
         """
@@ -138,46 +138,59 @@ class EnhancedModelPredictor:
         # 预处理新数据
         X_processed = self.preprocess_new_data(new_data)
 
-        # 预测
-        predictions = self.best_model.predict(X_processed)
+        # 为每个目标变量进行预测
+        predictions = {}
+        probabilities = {}
 
-        # 如果是分类问题且目标变量被编码过，则解码预测结果
-        if (self.problem_type == 'classification' and
-                self.preprocessing['target_encoder'] is not None):
-            predictions = self.preprocessing['target_encoder'].inverse_transform(predictions)
+        for target in self.target_names:
+            print(f"\n为目标变量 '{target}' 进行预测...")
+
+            # 预测
+            y_pred = self.best_models[target].predict(X_processed)
+
+            # 如果是分类问题且目标变量被编码过，则解码预测结果
+            if (self.problem_types[target] == 'classification' and
+                    target in self.preprocessing['target_encoders']):
+                y_pred = self.preprocessing['target_encoders'][target].inverse_transform(y_pred)
+
+            predictions[target] = y_pred
+
+            # 对于分类问题，获取预测概率（如果支持）
+            if (self.problem_types[target] == 'classification' and
+                    include_probabilities and
+                    hasattr(self.best_models[target], "predict_proba")):
+
+                y_proba = self.best_models[target].predict_proba(X_processed)
+
+                # 获取类别名称
+                if target in self.preprocessing['target_encoders']:
+                    class_names = self.preprocessing['target_encoders'][target].classes_
+                else:
+                    class_names = [f"类别_{i}" for i in range(y_proba.shape[1])]
+
+                # 创建概率数据框
+                proba_dict = {}
+                for i, name in enumerate(class_names):
+                    proba_dict[f"{target}_概率_{name}"] = y_proba[:, i]
+
+                probabilities[target] = pd.DataFrame(proba_dict)
 
         # 创建结果数据框
         result_dfs = []
 
-        # 添加预测结果
-        result_df = pd.DataFrame({
-            f'预测_{self.target_name}': predictions
-        })
-        result_dfs.append(result_df)
-
-        # 如果包含原始数据
+        # 添加原始数据
         if include_original_data:
-            result_dfs.insert(0, new_data.reset_index(drop=True))
+            result_dfs.append(new_data.reset_index(drop=True))
 
-        # 对于分类问题，添加预测概率
-        if (self.problem_type == 'classification' and
-                include_probabilities and
-                hasattr(self.best_model, "predict_proba")):
+        # 添加预测结果
+        predictions_df = pd.DataFrame(predictions)
+        predictions_df.columns = [f'预测_{col}' for col in predictions_df.columns]
+        result_dfs.append(predictions_df)
 
-            probabilities = self.best_model.predict_proba(X_processed)
-
-            # 获取类别名称
-            if self.preprocessing['target_encoder'] is not None:
-                class_names = self.preprocessing['target_encoder'].classes_
-            else:
-                class_names = [f"类别_{i}" for i in range(probabilities.shape[1])]
-
-            # 创建概率数据框
-            proba_df = pd.DataFrame(
-                probabilities,
-                columns=[f"概率_{name}" for name in class_names]
-            )
-            result_dfs.append(proba_df)
+        # 添加预测概率
+        if include_probabilities and probabilities:
+            for target, proba_df in probabilities.items():
+                result_dfs.append(proba_df)
 
         # 合并所有数据框
         final_result = pd.concat(result_dfs, axis=1)
@@ -187,24 +200,24 @@ class EnhancedModelPredictor:
         data_filename = os.path.splitext(os.path.basename(new_data_path))[0]
 
         if output_format == 'csv':
-            output_filename = f"predictions_{data_filename}_{timestamp}.csv"
+            output_filename = f"multi_target_predictions_{data_filename}_{timestamp}.csv"
             output_path = os.path.join(self.output_dir, output_filename)
             final_result.to_csv(output_path, index=False, encoding='utf-8-sig')
             print(f"预测结果已保存到: {output_path}")
 
             # 同时保存一个不带时间戳的版本（方便后续更新）
-            latest_output_path = os.path.join(self.output_dir, f"predictions_{data_filename}.csv")
+            latest_output_path = os.path.join(self.output_dir, f"latest_multi_target_predictions_{data_filename}.csv")
             final_result.to_csv(latest_output_path, index=False, encoding='utf-8-sig')
             print(f"最新预测结果已保存到: {latest_output_path}")
 
         elif output_format == 'excel':
-            output_filename = f"predictions_{data_filename}_{timestamp}.xlsx"
+            output_filename = f"multi_target_predictions_{data_filename}_{timestamp}.xlsx"
             output_path = os.path.join(self.output_dir, output_filename)
             final_result.to_excel(output_path, index=False)
             print(f"预测结果已保存到: {output_path}")
 
             # 同时保存一个不带时间戳的版本
-            latest_output_path = os.path.join(self.output_dir, f"latest_predictions_{data_filename}.xlsx")
+            latest_output_path = os.path.join(self.output_dir, f"latest_multi_target_predictions_{data_filename}.xlsx")
             final_result.to_excel(latest_output_path, index=False)
             print(f"最新预测结果已保存到: {latest_output_path}")
 
@@ -212,61 +225,59 @@ class EnhancedModelPredictor:
             raise ValueError(f"不支持的输出格式: {output_format}")
 
         # 打印预测结果摘要
-        if self.problem_type == 'classification':
-            print("\n预测结果分布:")
-            print(final_result[f'预测_{self.target_name}'].value_counts())
-        else:
-            print(f"\n预测结果统计:")
-            print(f"平均值: {final_result[f'预测_{self.target_name}'].mean():.4f}")
-            print(f"最小值: {final_result[f'预测_{self.target_name}'].min():.4f}")
-            print(f"最大值: {final_result[f'预测_{self.target_name}'].max():.4f}")
-            print(f"标准差: {final_result[f'预测_{self.target_name}'].std():.4f}")
-
-        # 生成预测报告
-        self.generate_prediction_report(final_result, data_filename)
+        self.generate_prediction_summary(predictions, data_filename)
 
         return final_result
 
-    def generate_prediction_report(self, predictions_df, data_filename):
+    def generate_prediction_summary(self, predictions, data_filename):
         """
-        生成预测报告
+        生成预测结果摘要
 
         参数:
-        predictions_df (DataFrame): 包含预测结果的数据框
+        predictions (dict): 包含预测结果的字典
         data_filename (str): 数据文件名（用于生成报告文件名）
         """
-        report_content = []
+        summary_content = []
 
         # 添加基本信息
-        report_content.append("预测报告")
-        report_content.append("=" * 50)
-        report_content.append(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        report_content.append(f"问题类型: {self.problem_type}")
-        report_content.append(f"目标变量: {self.target_name}")
-        report_content.append(f"预测样本数: {len(predictions_df)}")
-        report_content.append("")
+        summary_content.append("多目标变量预测结果摘要")
+        summary_content.append("=" * 50)
+        summary_content.append(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        summary_content.append(f"数据文件: {data_filename}")
+        summary_content.append(f"目标变量数量: {len(self.target_names)}")
+        summary_content.append("")
 
-        # 添加预测结果统计
-        if self.problem_type == 'classification':
-            report_content.append("预测结果分布:")
-            value_counts = predictions_df[f'预测_{self.target_name}'].value_counts()
-            for value, count in value_counts.items():
-                percentage = count / len(predictions_df) * 100
-                report_content.append(f"  {value}: {count} ({percentage:.2f}%)")
-        else:
-            report_content.append("预测结果统计:")
-            report_content.append(f"  平均值: {predictions_df[f'预测_{self.target_name}'].mean():.4f}")
-            report_content.append(f"  最小值: {predictions_df[f'预测_{self.target_name}'].min():.4f}")
-            report_content.append(f"  最大值: {predictions_df[f'预测_{self.target_name}'].max():.4f}")
-            report_content.append(f"  标准差: {predictions_df[f'预测_{self.target_name}'].std():.4f}")
-            report_content.append(f"  中位数: {predictions_df[f'预测_{self.target_name}'].median():.4f}")
+        # 添加每个目标变量的预测结果统计
+        for target in self.target_names:
+            pred_values = predictions[target]
 
-        # 保存报告
-        report_path = os.path.join(self.output_dir, f"prediction_report_{data_filename}.txt")
-        with open(report_path, 'w', encoding='utf-8') as f:
-            f.write("\n".join(report_content))
+            summary_content.append(f"目标变量: {target}")
+            summary_content.append(f"问题类型: {self.problem_types[target]}")
 
-        print(f"预测报告已保存到: {report_path}")
+            if self.problem_types[target] == 'classification':
+                # 分类问题的统计
+                unique, counts = np.unique(pred_values, return_counts=True)
+                summary_content.append("预测结果分布:")
+                for value, count in zip(unique, counts):
+                    percentage = count / len(pred_values) * 100
+                    summary_content.append(f"  {value}: {count} ({percentage:.2f}%)")
+            else:
+                # 回归问题的统计
+                summary_content.append("预测结果统计:")
+                summary_content.append(f"  平均值: {np.mean(pred_values):.4f}")
+                summary_content.append(f"  最小值: {np.min(pred_values):.4f}")
+                summary_content.append(f"  最大值: {np.max(pred_values):.4f}")
+                summary_content.append(f"  标准差: {np.std(pred_values):.4f}")
+                summary_content.append(f"  中位数: {np.median(pred_values):.4f}")
+
+            summary_content.append("")
+
+        # 保存摘要
+        summary_path = os.path.join(self.output_dir, f"prediction_summary_{data_filename}.txt")
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(summary_content))
+
+        print(f"预测摘要已保存到: {summary_path}")
 
     def batch_predict(self, data_dir, file_pattern="*.csv", **kwargs):
         """
@@ -316,7 +327,7 @@ if __name__ == "__main__":
 
     # 创建预测器实例
     try:
-        predictor = EnhancedModelPredictor(model_directory)
+        predictor = MultiTargetModelPredictor(model_directory)
 
         # 进行预测并导出结果
         predictions = predictor.predict(
