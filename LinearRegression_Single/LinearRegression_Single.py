@@ -21,7 +21,6 @@ lr.fit(x,y)
 print("斜率为：",lr.coef_)
 print("截率为：",lr.intercept_)
 print("y的预测值：\n", lr.predict(y))
-print("y的x=20预测值：\n", lr.predict([[20]]))
 
 MSE = mean_squared_error(y, lr.predict(x))
 R2 = r2_score(y, lr.predict(x))
