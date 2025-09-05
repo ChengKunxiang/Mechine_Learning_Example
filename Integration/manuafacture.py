@@ -7,7 +7,6 @@ from datetime import datetime
 
 warnings.filterwarnings('ignore')
 
-
 class MultiTargetModelPredictor:
     def __init__(self, model_dir):
         """

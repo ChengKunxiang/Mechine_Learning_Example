@@ -15,12 +15,9 @@ plt.figure()
 plt.scatter(x, y)
 plt.show()
 
-x = np.array(x)
-x = x.reshape(-1, 1)
-y = np.array(y)
-y = y.reshape(-1, 1)
 lr = LinearRegression()
 lr.fit(x,y)
+
 print("斜率为：",lr.coef_)
 print("截率为：",lr.intercept_)
 print("y的预测值：\n", lr.predict(y))
