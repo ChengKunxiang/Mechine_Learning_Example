@@ -23,6 +23,7 @@ warnings.filterwarnings('ignore')
 plt.rcParams['font.family'] = 'SimHei'
 plt.rcParams['axes.unicode_minus'] = False
 
+
 class MultiTargetModelComparisonSystem:
     def __init__(self, output_dir=None):
         """
@@ -61,27 +62,30 @@ class MultiTargetModelComparisonSystem:
         self.csv_dir = os.path.join(self.output_dir, "csv")
         self.images_dir = os.path.join(self.output_dir, "images")
         self.models_dir = os.path.join(self.output_dir, "models")
+        self.data_dir = os.path.join(self.output_dir, "data")  # 新增数据目录
 
         os.makedirs(self.csv_dir, exist_ok=True)
         os.makedirs(self.images_dir, exist_ok=True)
         os.makedirs(self.models_dir, exist_ok=True)
+        os.makedirs(self.data_dir, exist_ok=True)  # 创建数据目录
 
         print(f"输出目录: {self.output_dir}")
 
-    def load_and_preprocess_data(self, file_path, target_columns, test_size=0.2, random_state=42):
+    def load_and_preprocess_data(self, file_path, target_columns, test_size=0.1, random_state=42):
         """
         加载和预处理数据
 
         参数:
         file_path (str): CSV文件路径
         target_columns (list): 目标变量列名列表
-        test_size (float): 测试集比例
+        test_size (float): 测试集比例，修改为0.1（10%）
         random_state (int): 随机种子
         """
         # 加载数据
         data = pd.read_csv(file_path)
         print(f"数据集形状: {data.shape}")
         print(f"目标变量: {target_columns}")
+        print(f"训练集比例: {1 - test_size:.0%}，测试集比例: {test_size:.0%}")
 
         # 处理缺失值
         data = data.dropna()
@@ -124,17 +128,30 @@ class MultiTargetModelComparisonSystem:
                 self.Y[target] = le.fit_transform(self.Y[target])
                 self.target_encoders[target] = le
 
-        # 划分训练集和测试集
+        # 划分训练集和测试集（90%训练，10%测试）
         self.X_train, self.X_test, self.Y_train, self.Y_test = train_test_split(
             self.X, self.Y, test_size=test_size, random_state=random_state
         )
 
-        # 标准化特征
-        self.X_train = self.scaler.fit_transform(self.X_train)
-        self.X_test = self.scaler.transform(self.X_test)
+        # 保存原始的训练集和测试集到CSV文件
+        train_data = pd.concat([self.X_train, self.Y_train], axis=1)
+        test_data = pd.concat([self.X_test, self.Y_test], axis=1)
 
-        print(f"\n训练集形状: X={self.X_train.shape}, Y={self.Y_train.shape}")
-        print(f"测试集形状: X={self.X_test.shape}, Y={self.Y_test.shape}")
+        train_data_path = os.path.join(self.data_dir, "train_dataset.csv")
+        test_data_path = os.path.join(self.data_dir, "test_dataset.csv")
+
+        train_data.to_csv(train_data_path, index=False)
+        test_data.to_csv(test_data_path, index=False)
+
+        print(f"训练集已保存到: {train_data_path} (样本数: {len(train_data)})")
+        print(f"测试集已保存到: {test_data_path} (样本数: {len(test_data)})")
+
+        # 标准化特征
+        self.X_train_scaled = self.scaler.fit_transform(self.X_train)
+        self.X_test_scaled = self.scaler.transform(self.X_test)
+
+        print(f"\n训练集形状: X={self.X_train_scaled.shape}, Y={self.Y_train.shape}")
+        print(f"测试集形状: X={self.X_test_scaled.shape}, Y={self.Y_test.shape}")
 
         return self.X, self.Y
 
@@ -163,6 +180,7 @@ class MultiTargetModelComparisonSystem:
         """训练和评估所有模型"""
         self.results = {}
         self.best_models = {}
+        self.predictions = {}  # 存储每个模型的预测结果
 
         for target in self.target_names:
             print(f"\n{'=' * 50}")
@@ -174,15 +192,19 @@ class MultiTargetModelComparisonSystem:
             y_test = self.Y_test[target].values
 
             self.results[target] = {}
+            self.predictions[target] = {'Actual': y_test}
 
             for name, model in self.models[target].items():
                 print(f"\n训练 {name}...")
 
                 # 训练模型
-                model.fit(self.X_train, y_train)
+                model.fit(self.X_train_scaled, y_train)
 
                 # 预测
-                y_pred = model.predict(self.X_test)
+                y_pred = model.predict(self.X_test_scaled)
+
+                # 存储预测结果
+                self.predictions[target][name] = y_pred
 
                 # 评估模型
                 if self.problem_types[target] == 'regression':
@@ -215,7 +237,7 @@ class MultiTargetModelComparisonSystem:
 
                     # 对于分类问题，还可以计算其他指标
                     if hasattr(model, "predict_proba"):
-                        y_proba = model.predict_proba(self.X_test)
+                        y_proba = model.predict_proba(self.X_test_scaled)
                         # 对于多分类问题，我们需要处理每个类别的概率
                         if y_proba.shape[1] > 2:
                             # 使用OneVsRest方法计算AUC
@@ -269,6 +291,95 @@ class MultiTargetModelComparisonSystem:
 
         return self.results
 
+    def save_predictions_to_csv(self):
+        """保存测试集的预测结果到CSV文件"""
+        for target in self.target_names:
+            # 创建包含实际值和所有模型预测值的DataFrame
+            pred_df = pd.DataFrame(self.predictions[target])
+
+            # 保存到CSV文件
+            pred_path = os.path.join(self.data_dir, f"{target}_predictions.csv")
+            pred_df.to_csv(pred_path, index=False)
+            print(f"目标变量 '{target}' 的预测结果已保存到: {pred_path}")
+
+        # 保存所有目标变量的汇总预测结果
+        all_predictions = {}
+        for target in self.target_names:
+            all_predictions[f'Actual_{target}'] = self.predictions[target]['Actual']
+            for model_name in self.models[target].keys():
+                all_predictions[f'{model_name}_{target}'] = self.predictions[target][model_name]
+
+        all_pred_df = pd.DataFrame(all_predictions)
+        all_pred_path = os.path.join(self.data_dir, "all_predictions_summary.csv")
+        all_pred_df.to_csv(all_pred_path, index=False)
+        print(f"所有目标变量的预测结果汇总已保存到: {all_pred_path}")
+
+    def plot_actual_vs_predicted_distribution(self):
+        """绘制测试集实际值与预测值的分布图"""
+        for target in self.target_names:
+            if self.problem_types[target] != 'regression':
+                continue
+
+            # 获取实际值和最佳模型的预测值
+            y_actual = self.predictions[target]['Actual']
+            best_model_name = max(self.results[target].items(), key=lambda x: x[1]['R2'])[0]
+            y_pred_best = self.predictions[target][best_model_name]
+
+            # 创建分布图
+            plt.figure(figsize=(12, 8))
+
+            # 绘制实际值和预测值的分布直方图
+            plt.subplot(2, 2, 1)
+            plt.hist(y_actual, bins=30, alpha=0.7, label='实际值', color='blue')
+            plt.hist(y_pred_best, bins=30, alpha=0.7, label='预测值', color='red')
+            plt.xlabel('值')
+            plt.ylabel('频率')
+            plt.title(f'{target} - 实际值与预测值分布')
+            plt.legend()
+
+            # 绘制所有模型的预测值分布对比
+            plt.subplot(2, 2, 2)
+            colors = ['red', 'green', 'orange', 'purple']
+            for i, (model_name, y_pred) in enumerate(self.predictions[target].items()):
+                if model_name == 'Actual':
+                    continue
+                plt.hist(y_pred, bins=30, alpha=0.5, label=model_name, color=colors[i - 1])
+            plt.hist(y_actual, bins=30, alpha=0.7, label='实际值', color='blue')
+            plt.xlabel('值')
+            plt.ylabel('频率')
+            plt.title(f'{target} - 所有模型预测值分布')
+            plt.legend()
+
+            # 绘制箱线图比较分布
+            plt.subplot(2, 2, 3)
+            data_to_plot = [y_actual]
+            labels = ['实际值']
+            for model_name, y_pred in self.predictions[target].items():
+                if model_name != 'Actual':
+                    data_to_plot.append(y_pred)
+                    labels.append(model_name)
+
+            plt.boxplot(data_to_plot, labels=labels)
+            plt.ylabel('值')
+            plt.title(f'{target} - 分布箱线图比较')
+            plt.xticks(rotation=45)
+
+            # 绘制密度图
+            plt.subplot(2, 2, 4)
+            sns.kdeplot(y_actual, label='实际值', fill=True, alpha=0.5)
+            sns.kdeplot(y_pred_best, label=f'最佳模型({best_model_name})', fill=True, alpha=0.5)
+            plt.xlabel('值')
+            plt.ylabel('密度')
+            plt.title(f'{target} - 密度分布比较')
+            plt.legend()
+
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.images_dir, f'{target}_actual_vs_predicted_distribution.png'),
+                        dpi=300, bbox_inches='tight')
+            # plt.show()
+
+            print(f"目标变量 '{target}' 的实际值与预测值分布图已保存")
+
     def plot_comprehensive_results(self):
         """绘制全面的模型比较结果"""
         # 为每个目标变量创建图表
@@ -307,7 +418,7 @@ class MultiTargetModelComparisonSystem:
                 plt.tight_layout()
                 plt.savefig(os.path.join(self.images_dir, f'{target}_regression_comparison.png'),
                             dpi=300, bbox_inches='tight')
-                plt.show()
+                # plt.show()
 
             else:  # classification
                 # 创建子图
@@ -346,7 +457,7 @@ class MultiTargetModelComparisonSystem:
                 plt.tight_layout()
                 plt.savefig(os.path.join(self.images_dir, f'{target}_classification_comparison.png'),
                             dpi=300, bbox_inches='tight')
-                plt.show()
+                # plt.show()
 
     def plot_prediction_vs_actual(self):
         """绘制预测值与实际值的对比图（仅回归问题）"""
@@ -355,7 +466,7 @@ class MultiTargetModelComparisonSystem:
                 continue
 
             # 使用最佳模型进行预测
-            y_pred = self.best_models[target].predict(self.X_test)
+            y_pred = self.best_models[target].predict(self.X_test_scaled)
             y_test = self.Y_test[target].values
 
             # 创建散点图
@@ -378,7 +489,7 @@ class MultiTargetModelComparisonSystem:
 
             plt.savefig(os.path.join(self.images_dir, f'{target}_prediction_vs_actual.png'),
                         dpi=300, bbox_inches='tight')
-            plt.show()
+            # plt.show()
 
             # 绘制残差图
             residuals = y_test - y_pred
@@ -391,7 +502,7 @@ class MultiTargetModelComparisonSystem:
 
             plt.savefig(os.path.join(self.images_dir, f'{target}_residual_plot.png'),
                         dpi=300, bbox_inches='tight')
-            plt.show()
+            # plt.show()
 
     def plot_error_analysis(self):
         """绘制误差分析图（仅回归问题）"""
@@ -400,7 +511,7 @@ class MultiTargetModelComparisonSystem:
                 continue
 
             # 使用最佳模型进行预测
-            y_pred = self.best_models[target].predict(self.X_test)
+            y_pred = self.best_models[target].predict(self.X_test_scaled)
             y_test = self.Y_test[target].values
             errors = np.abs(y_test - y_pred)
 
@@ -422,7 +533,7 @@ class MultiTargetModelComparisonSystem:
             plt.tight_layout()
             plt.savefig(os.path.join(self.images_dir, f'{target}_error_analysis.png'),
                         dpi=300, bbox_inches='tight')
-            plt.show()
+            # plt.show()
 
             # 计算并打印误差统计
             print(f"\n{target} 误差分析:")
@@ -441,7 +552,7 @@ class MultiTargetModelComparisonSystem:
             y_train = self.Y_train[target].values
 
             train_sizes, train_scores, test_scores = learning_curve(
-                self.best_models[target], self.X_train, y_train, cv=5,
+                self.best_models[target], self.X_train_scaled, y_train, cv=5,
                 train_sizes=np.linspace(0.1, 1.0, 10), n_jobs=-1,
                 scoring='r2' if self.problem_types[target] == 'regression' else 'accuracy'
             )
@@ -464,7 +575,7 @@ class MultiTargetModelComparisonSystem:
             plt.grid(True)
             plt.savefig(os.path.join(self.images_dir, f'{target}_learning_curve.png'),
                         dpi=300, bbox_inches='tight')
-            plt.show()
+            # plt.show()
 
     def plot_confusion_matrix(self):
         """绘制混淆矩阵（仅分类问题）"""
@@ -472,7 +583,7 @@ class MultiTargetModelComparisonSystem:
             if self.problem_types[target] != 'classification':
                 continue
 
-            y_pred = self.best_models[target].predict(self.X_test)
+            y_pred = self.best_models[target].predict(self.X_test_scaled)
             y_test = self.Y_test[target].values
             cm = confusion_matrix(y_test, y_pred)
 
@@ -483,7 +594,7 @@ class MultiTargetModelComparisonSystem:
             plt.xlabel('预测标签')
             plt.savefig(os.path.join(self.images_dir, f'{target}_confusion_matrix.png'),
                         dpi=300, bbox_inches='tight')
-            plt.show()
+            # plt.show()
 
     def plot_roc_curve(self):
         """绘制ROC曲线（仅分类问题且支持概率预测）"""
@@ -492,7 +603,7 @@ class MultiTargetModelComparisonSystem:
                     not hasattr(self.best_models[target], "predict_proba")):
                 continue
 
-            y_proba = self.best_models[target].predict_proba(self.X_test)
+            y_proba = self.best_models[target].predict_proba(self.X_test_scaled)
             y_test = self.Y_test[target].values
 
             # 处理多分类问题
@@ -540,7 +651,7 @@ class MultiTargetModelComparisonSystem:
             plt.legend(loc="lower right")
             plt.savefig(os.path.join(self.images_dir, f'{target}_roc_curve.png'),
                         dpi=300, bbox_inches='tight')
-            plt.show()
+            # plt.show()
 
     def plot_feature_importance(self):
         """绘制特征重要性（对于树模型）"""
@@ -559,7 +670,7 @@ class MultiTargetModelComparisonSystem:
             plt.xlim([-1, len(importances)])
             plt.savefig(os.path.join(self.images_dir, f'{target}_feature_importance.png'),
                         dpi=300, bbox_inches='tight')
-            plt.show()
+            # plt.show()
 
     def save_results(self):
         """保存结果到CSV文件"""
@@ -601,8 +712,8 @@ class MultiTargetModelComparisonSystem:
         print("开始多目标变量机器学习模型比较分析")
         print("=" * 50)
 
-        # 1. 加载和预处理数据
-        X, Y = self.load_and_preprocess_data(file_path, target_columns)
+        # 1. 加载和预处理数据（使用90%训练，10%测试）
+        X, Y = self.load_and_preprocess_data(file_path, target_columns, test_size=0.1)
 
         # 2. 初始化模型
         self.initialize_models()
@@ -610,28 +721,34 @@ class MultiTargetModelComparisonSystem:
         # 3. 训练和评估模型
         results = self.train_and_evaluate_models()
 
-        # 4. 绘制全面的结果比较
+        # 4. 保存预测结果到CSV
+        self.save_predictions_to_csv()
+
+        # 5. 绘制实际值与预测值的分布图
+        self.plot_actual_vs_predicted_distribution()
+
+        # 6. 绘制全面的结果比较
         self.plot_comprehensive_results()
 
-        # 5. 对于回归问题，绘制预测值与实际值对比图
+        # 7. 对于回归问题，绘制预测值与实际值对比图
         self.plot_prediction_vs_actual()
 
-        # 6. 对于回归问题，绘制误差分析图
+        # 8. 对于回归问题，绘制误差分析图
         self.plot_error_analysis()
 
-        # 7. 对于分类问题，绘制混淆矩阵
+        # 9. 对于分类问题，绘制混淆矩阵
         self.plot_confusion_matrix()
 
-        # 8. 对于分类问题，绘制ROC曲线
+        # 10. 对于分类问题，绘制ROC曲线
         self.plot_roc_curve()
 
-        # 9. 绘制学习曲线
+        # 11. 绘制学习曲线
         self.plot_learning_curves()
 
-        # 10. 绘制特征重要性
+        # 12. 绘制特征重要性
         self.plot_feature_importance()
 
-        # 11. 保存结果
+        # 13. 保存结果
         self.save_results()
 
         print("=" * 50)
